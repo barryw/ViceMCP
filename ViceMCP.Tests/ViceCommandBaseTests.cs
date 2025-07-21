@@ -188,7 +188,7 @@ namespace ViceMCP.Tests
             // Assert - completes with the error code from response
             command.Response.IsCompleted.Should().BeTrue();
             var result = command.Response.Result;
-            
+
             // Since it's the wrong type, only error code is passed through
             result.IsSuccess.Should().BeTrue(); // Because ErrorCode.OK means success
             result.ErrorCode.Should().Be(ErrorCode.OK);

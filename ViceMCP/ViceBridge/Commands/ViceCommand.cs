@@ -82,6 +82,19 @@ namespace ViceMCP.ViceBridge.Commands
             {
                 WriteContent(bufferSpan[11..]);
             }
+            
+            // Debug logging for keyboard feed
+            if (CommandType == CommandType.KeyboardFeed)
+            {
+                try
+                {
+                    var logPath = "/Users/barry/RiderProjects/ViceMCP/vicemcp_keyboard_debug.log";
+                    var logEntry = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] Full command packet ({totalLength} bytes): {BitConverter.ToString(buffer.Data, 0, (int)totalLength)}";
+                    System.IO.File.AppendAllText(logPath, logEntry + Environment.NewLine);
+                }
+                catch { }
+            }
+            
             return (buffer, totalLength);
         }
         /// <inheritdoc cref="IViceCommand.ApiVersion"/>

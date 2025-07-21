@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Linq;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Server;
@@ -281,14 +282,24 @@ public class ViceTools
         
         var command = new PingCommand();
         var enqueued = _viceBridge.EnqueueCommand(command);
-        var result = await enqueued.Response;
         
-        if (!result.IsSuccess)
+        // Create a 2 second timeout
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        
+        try
         {
-            throw new InvalidOperationException($"Failed to ping: {result.ErrorCode}");
+            var result = await enqueued.Response.WaitAsync(cts.Token);
+            
+            if (!result.IsSuccess)
+            {
+                throw new InvalidOperationException($"Failed to ping: {result.ErrorCode}");
+            }
+            return "Pong! VICE is responding";
         }
-
-        return "Pong! VICE is responding";
+        catch (OperationCanceledException)
+        {
+            throw new TimeoutException("VICE did not respond to ping within 2 seconds - it may not be running");
+        }
     }
     
     [McpServerTool(Name = "get_banks"), Description("Gets available memory banks.")]
@@ -710,20 +721,61 @@ public class ViceTools
         await EnsureStartedAsync();
         
         // The KeyboardFeedCommand handles escape sequences internally
-        // Common escape sequences:
-        // \n = Return
-        // \t = Tab  
-        // \\ = Backslash
+        // Supported escape sequences:
+        // \n or \r = Return (PETSCII 0x0D)
+        // \t = Tab (0x09)
+        // \\ = Literal backslash
+        // \" = Literal quote
+        // \b = Backspace (0x08)
+        // \d = Delete (0x14)
+        // \u = Cursor up (0x91)
+        // \l = Cursor left (0x9D)
+        // \h = Home (0x13)
+        // \c = Clear screen (0x93)
+        // \s = RUN/STOP (0x03)
         
-        var command = new KeyboardFeedCommand(keys);
-        var result = await _viceBridge.EnqueueCommand(command).Response;
-        
-        if (!result.IsSuccess)
+        try
         {
-            throw new InvalidOperationException($"Failed to send keys: {result.ErrorCode}");
+            var command = new KeyboardFeedCommand(keys);
+            
+            // Log before sending
+            try
+            {
+                var logPath = "/Users/barry/RiderProjects/ViceMCP/vicemcp_keyboard_debug.log";
+                var logEntry = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] About to send command to ViceBridge...";
+                await File.AppendAllTextAsync(logPath, logEntry + Environment.NewLine);
+            }
+            catch { }
+            
+            var result = await _viceBridge.EnqueueCommand(command).Response;
+            
+            if (!result.IsSuccess)
+            {
+                // Log to file for debugging
+                try
+                {
+                    var logPath = "/Users/barry/RiderProjects/ViceMCP/vicemcp_keyboard_debug.log";
+                    var logEntry = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] send_keys failed: ErrorCode={result.ErrorCode} ({(int)result.ErrorCode}), Keys='{keys}'";
+                    await File.AppendAllTextAsync(logPath, logEntry + Environment.NewLine);
+                }
+                catch { }
+                throw new InvalidOperationException($"Failed to send keys: {result.ErrorCode}");
+            }
+            
+            return $"Sent '{keys}' to keyboard buffer";
         }
-        
-        return $"Sent '{keys}' to keyboard buffer";
+        catch (ArgumentException ex)
+        {
+            // Log to file for debugging
+            try
+            {
+                var logPath = "/Users/barry/RiderProjects/ViceMCP/vicemcp_keyboard_debug.log";
+                var logEntry = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] send_keys ArgumentException: {ex.Message}, Keys='{keys}'";
+                await File.AppendAllTextAsync(logPath, logEntry + Environment.NewLine);
+            }
+            catch { }
+            throw;
+        }
     }
     
     [McpServerTool(Name = "compare_memory"), Description("Compares two memory regions.")]
@@ -945,5 +997,94 @@ public class ViceTools
         { 
             WriteIndented = true 
         });
+    }
+    
+    [McpServerTool(Name = "hit_run_stop"), Description("Simulates pressing RUN/STOP to break a running BASIC program")]
+    public async Task<string> HitRunStop()
+    {
+        await EnsureStartedAsync();
+        
+        try
+        {
+            // Step 1: Step one instruction to pause execution
+            var stepCmd = new AdvanceInstructionCommand(false, 1);
+            var stepResult = await _viceBridge.EnqueueCommand(stepCmd).Response;
+            if (!stepResult.IsSuccess)
+            {
+                throw new InvalidOperationException("Failed to step (pause execution)");
+            }
+            
+            // Step 2: Get current line number before breaking (for reporting)
+            var lineNumCmd = new MemoryGetCommand(0, 0x39, 0x3A, MemSpace.MainMemory, 0);
+            var lineResult = await _viceBridge.EnqueueCommand(lineNumCmd).Response;
+            
+            int currentLine = -1;
+            if (lineResult.IsSuccess && lineResult.Response?.Memory != null)
+            {
+                using var buffer = lineResult.Response.Memory.Value;
+                // Line number is stored as little-endian 16-bit value
+                currentLine = buffer.Data[0] | (buffer.Data[1] << 8);
+            }
+            
+            // Step 3: Set both X register and PC in a single RegistersSetCommand for atomicity
+            var registers = ImmutableArray.Create(
+                new RegisterItem(1, 30),      // X register = 30 (decimal)
+                new RegisterItem(3, 0xA437)   // PC = $A437
+            );
+            var setRegsCmd = new RegistersSetCommand(MemSpace.MainMemory, registers);
+            var setRegsResult = await _viceBridge.EnqueueCommand(setRegsCmd).Response;
+            if (!setRegsResult.IsSuccess)
+            {
+                throw new InvalidOperationException($"Failed to set registers: {setRegsResult.ErrorCode}");
+            }
+            
+            
+            // Step 5: Continue execution to process the break
+            var continueCmd = new ExitCommand();
+            var continueResult = await _viceBridge.EnqueueCommand(continueCmd).Response;
+            if (!continueResult.IsSuccess)
+            {
+                throw new InvalidOperationException($"Failed to continue execution: {continueResult.ErrorCode}");
+            }
+            
+            // Step 6: Wait a bit for BASIC to process the break
+            await Task.Delay(100);
+            
+            // Step 7: Verify we're back at READY prompt
+            var verifyCmd = new RegistersGetCommand(MemSpace.MainMemory);
+            var verifyResult = await _viceBridge.EnqueueCommand(verifyCmd).Response;
+            
+            if (verifyResult.IsSuccess && verifyResult.Response != null)
+            {
+                // Find PC in the registers response
+                var pcReg = verifyResult.Response.Items.FirstOrDefault(r => r.RegisterId == 3);
+                if (pcReg != null)
+                {
+                    var pc = pcReg.RegisterValue;
+                    // Check if PC is in BASIC idle loop range
+                    if (pc >= 0xE5CD && pc <= 0xE5D4)
+                    {
+                        if (currentLine >= 0 && currentLine < 65535)
+                        {
+                            return $"BREAK in line {currentLine}";
+                        }
+                        else
+                        {
+                            return "BREAK (program stopped)";
+                        }
+                    }
+                    else
+                    {
+                        return $"Break attempted - PC at ${pc:X4} (may need to retry)";
+                    }
+                }
+            }
+            
+            return "Break command sent";
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Failed to simulate RUN/STOP: {ex.Message}", ex);
+        }
     }
 }
