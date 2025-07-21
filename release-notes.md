@@ -1,19 +1,30 @@
-# ViceMCP v0.8.4 Release Notes
+# ViceMCP v0.9.0 Release Notes
 
-This release of ViceMCP focuses on bug fixes and minor improvements to the library's core functionality. There are no breaking changes in this version.
+This release of ViceMCP introduces initial support for the VICE Commodore emulator, including tools for interacting with the emulator's Model Context Protocol (MCP).
 
-## Bug Fixes
+## Features
 
-- Resolved an issue that could cause incorrect emulation state when loading and unloading disk images multiple times.
-- Fixed a bug that prevented the `ReadMemory` and `WriteMemory` methods from working correctly on certain memory regions.
+🎉 Implemented basic MCP client functionality to connect to and communicate with the VICE emulator.
+- Ability to start, stop, and control the emulator lifecycle.
+- Read and write emulator state information using the MCP protocol.
+- Experimental support for common emulator operations like loading disk images.
 
 ## Improvements
 
-- Optimized the performance of disk image handling, resulting in faster load and save times.
-- Improved the error messaging for unsupported or corrupted disk images.
+💪 Improved overall project structure and code organization to support future growth and extensibility.
+- Adopted a modular design with clear separation of concerns.
+- Introduced a fluent API for a more intuitive developer experience.
 
-## Technical Details
+## Breaking Changes
 
-- This release targets the `.NET 9.0` framework.
-- No changes were made to the public API, ensuring full backwards compatibility.
-- The internal codebase has been refactored to improve maintainability and extensibility.
+⚠️ This release introduces a breaking change to the `ViceEmulatorClient` constructor. The previous constructor has been deprecated in favor of a new constructor that requires a `ViceEmulatorOptions` object for configuration.
+
+## Developer Notes
+
+- The `ViceEmulatorClient` class is the main entry point for interacting with the VICE emulator via MCP.
+- Extensive logging and error handling have been implemented to aid in debugging.
+- Documentation and samples will be provided in a future release to help developers get started.
+
+## What's Next
+
+In the next release, we plan to focus on expanding the MCP feature set, including support for more advanced emulator operations and integrations with external tools or services.
